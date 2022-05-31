@@ -44,6 +44,7 @@ def create_param_string(dict_input: dict, process_name: str):
                         else:
                             val_str += f"'{val}', "
                     inputs.append(f"'{key}': {val_str[:-2]}]")
+
                 elif isinstance(value,dict):
                     inputs.append(f"'{key}': {str(value)}")
 
