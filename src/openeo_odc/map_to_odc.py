@@ -15,6 +15,7 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
 
     nodes = {}
     extra_func = {}
+
     for k, node_id in enumerate(graph.ids):
         cur_node = graph[node_id]
         parent_proc_id = cur_node.parent_process.process_id if cur_node.parent_process else None
@@ -43,7 +44,8 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
         if cur_node.process_id in PROCS_WITH_VARS:
             cur_node.content['arguments']['function'] = extra_func_utils.get_func_name(cur_node.id)
             extra_func[extra_func_utils.get_dict_key(cur_node.id)][f"return_{cur_node.id}"] = f"    return _{kwargs.pop('result_node')}\n\n"
-
+        if cur_node.process_id == "save_results":
+            graph_will_return_json_stuff = False
         param_sets = [{'x', 'y'}, {'x', }, {'data', 'value'}, {'base', 'p'}, {'data', }]
         if cur_node.process_id == 'load_collection':
             cur_node_content = map_load_collection(cur_node.id, cur_node.content)
@@ -52,9 +54,9 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
         elif (params in set(cur_node.arguments.keys()) for params in param_sets):
             if cur_node.parent_process and parent_proc_id in PROCS_WITH_VARS:
                 cur_node_content = map_general(cur_node.id, cur_node.content, kwargs,
-                                               donot_map_params=PROCS_WITH_VARS[parent_proc_id].list)
+                                               donot_map_params=PROCS_WITH_VARS[parent_proc_id].list, job_id=job_id)
             else:
-                cur_node_content = map_general(cur_node.id, cur_node.content, kwargs)
+                cur_node_content = map_general(cur_node.id, cur_node.content, kwargs, job_id=job_id)
         else:
             raise ValueError(f"Node {cur_node.id} with arguments {cur_node.arguments.keys()} could not be mapped!")
 
@@ -73,12 +75,19 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
     final_fc = {}
     for fc_proc in extra_func.values():
         final_fc.update(**fc_proc)
-    return {
+    
+    # If we lack a save_results node, we assume the results are in the form of a JSON response
+    # And Pack it as such 
+    last_node_name = list(nodes.keys())[-1]
+    graph_will_return_json_stuff =  "save_result" not in nodes[last_node_name]
+        
+    res_nodes = {
         'header': create_job_header(odc_env_collection=odc_env, dask_url=odc_url, job_id=job_id, user_id=user_id),
         **final_fc,
         **nodes,
-        'tail': create_job_tail(),
+        'tail': create_job_tail(graph_will_return_json_stuff, last_node_name, job_id, odc_url),
     }
+    return res_nodes
 
 
 def resolve_from_parameter(node):
@@ -116,29 +125,53 @@ def resolve_from_parameter(node):
 
     return in_nodes
 
-
 def create_job_header(dask_url: str, job_id: str, user_id: str, odc_env_collection: str = "default", odc_env_user_gen: str = "user_generated"):
     """Create job imports."""
-    return f"""from dask_gateway import Gateway
-import datacube
-import openeo_processes as oeop
-import time
+    code = "import rioxarray\n"
+    code += "from shapely import ops\n"
+    code += "import pyproj\n"
+    code += "from shapely.ops import transform\n"
+    code += "from shapely.geometry import Polygon\n"
+    code += "\n"
 
-# Initialize ODC instance
-cube = datacube.Datacube(app='collection', env='{odc_env_collection}')
-cube_user_gen = datacube.Datacube(app='user_gen', env='{odc_env_user_gen}')
-# Connect to the gateway
-gateway = Gateway('{dask_url}')
-options = gateway.cluster_options()
-options.user_id = '{user_id}'
-options.job_id = '{job_id}'
-cluster = gateway.new_cluster(options)
-cluster.adapt(minimum=1, maximum=3)
-time.sleep(60)
-client = cluster.get_client()
-"""
+    code += "# from dask_gateway import Gateway\n"
+    code += "import datacube\n"
+    code += "import openeo_processes as oeop\n"
+    code += "import time\n"
+    code += "\n"
 
-def create_job_tail():
-    """Ensure shutdown of cluster"""
-    return f"""cluster.shutdown()
-gateway.close()"""
+    code += "import json\n"
+    code += "\n"
+    
+    code += "# Initialize ODC instance\n"
+    code += "cube = datacube.Datacube()\n"
+
+    if dask_url:
+        code += "# Connect to the gateway\n"
+        code += "#gateway = Gateway('{dask_url}')\n"
+        code += "#options = gateway.cluster_options()\n"
+        code += "#options.user_id = '{user_id}'\n"
+        code += "#options.job_id = '{job_id}'\n"
+        code += "#cluster = gateway.new_cluster(options)\n"
+        code += "#cluster.adapt(minimum=1, maximum=3)\n"
+        code += "#time.sleep(60)\n"
+        code += "#client = cluster.get_client()\n"
+        code += "# Note that we shold encapsulate the progran in try-except-finally\n"
+ 
+    return code 
+
+
+def create_job_tail(graph_will_return_json_stuff,last_node_name, job_id, dask_url):
+    res = ""
+    if dask_url:
+        # Ensure shutdown of cluster""" # This should be done in a finally clause
+        res +="cluster.shutdown()\ngateway.close()"
+    if graph_will_return_json_stuff:
+        # Allow other results thatn tif/nc files to be returned
+        save_cmd = f"with open('{job_id}.json', 'w') as f:\n"
+        save_cmd += "    res = {}\n"
+        save_cmd += f"    res['result']=_{last_node_name}\n"
+        save_cmd += "    res = json.dumps(res)\n"
+        save_cmd += "    f.write(res)\n"
+        res += save_cmd
+    return res

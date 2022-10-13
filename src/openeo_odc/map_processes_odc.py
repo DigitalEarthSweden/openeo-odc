@@ -1,6 +1,9 @@
 """
 
 """
+from ast import arg
+
+from asyncio.format_helpers import extract_stack
 from datetime import datetime
 import numpy as np
 from copy import deepcopy
@@ -9,10 +12,116 @@ from typing import List
 from openeo_odc.utils import get_oeop_str
 from openeo_odc.string_creation import create_param_string
 
+from shapely import ops
 
 DASK_CHUNK_SIZE_X = 12114
 DASK_CHUNK_SIZE_Y = 12160
 
+
+# ----------------------------------------------------------------------------------
+#                            add_optional_arg_to_params
+# ----------------------------------------------------------------------------------
+def add_optional_arg_to_params(params,arguments,argkey,paramkey=None, add_none_vals=False):
+    '''
+    Only add argument key to params if the argument is given and not None
+    unless add_none_vals is true :)
+    '''
+    paramkey = paramkey or argkey
+    val = arguments.get(argkey,None)
+    if val or add_none_vals:
+        params[paramkey]=val
+    return
+# ----------------------------------------------------------------------------------
+#                     add_optional_spatial_extent_to_params
+# ----------------------------------------------------------------------------------
+def add_optional_spatial_extent_to_params(params, process):
+    if 'spatial_extent' not in process['arguments']:
+        return
+    try:
+        extent = process['arguments']['spatial_extent']
+        # From process, either None, bbox OR GeoJSON can be specified.
+        latlong = ['south','north','east','west']
+        if all([arg in extent for arg in latlong]):
+            params['x'] = (extent['west'],extent['east'])
+            params['y'] = (extent['south'],extent['north'])
+            return None
+        
+        features =  extent.get('features',[])
+        lowLon, highLon = (1000000000.0, 0.0)
+        lowLat, highLat = (1000000000.0, 0.0)
+        polygons = []
+        for feature in features:
+            coords = feature['geometry']['coordinates'][0]
+            polygon = ops.Polygon(coords)
+            (minx, miny, maxx, maxy) = polygon.exterior.bounds
+            width = maxx - minx
+            height = maxy - miny
+            if width == 0 or height == 0:
+                continue
+            polygons.append(coords)
+            lowLon = min(lowLon,minx)
+            lowLat = min(lowLat,miny)
+            highLon = max(highLon,maxx)
+            highLat = max(highLat,maxy)
+            
+            
+            # TODO: Make sure web-editor complies!
+            #polygon = features[0]['geometry']['coordinates'][0]
+            #lowLat      = np.min([[el[1] for el in polygon]])
+            #highLat     = np.max([[el[1] for el in polygon]])
+            #lowLon      = np.min([[el[0] for el in polygon]])
+            #highLon     = np.max([[el[0] for el in polygon]])
+            
+        params['x'] = (lowLon,highLon)
+        params['y'] = (lowLat,highLat)
+
+        return polygons
+    except Exception as e: # KeyError means that the json was malformed. 
+        print(e)
+        pass # TODO: Raise a good exception here
+
+# ----------------------------------------------------------------------------------
+#                      add_optional_time_arg_to_params
+# ----------------------------------------------------------------------------------
+def add_optional_time_arg_to_params(params, process):
+    def up_to_not_including(date):
+        return np.datetime_as_string(np.datetime64(date) - np.timedelta64(1, 's'), timezone='UTC') # Achieves, "up to but not including"
+    
+    default_timeStart = '1970-01-01'
+    default_timeEnd   = str(datetime.now()).split(' ')[0] # Today is the default date for timeEnd, to include all the dates if not specified
+    params['time'] = [default_timeStart, default_timeEnd]
+
+    if 'temporal_extent' not in process['arguments']:
+       return
+    extent = process['arguments']['temporal_extent']
+    
+    if len(extent)>0:
+       params['time'][0] = extent[0]
+    if len(extent)>1:
+       params['time'][1] = up_to_not_including(extent[1])
+
+
+# ----------------------------------------------------------------------------------
+#                      generate_polygon_clipping_code
+# ----------------------------------------------------------------------------------
+def  generate_polygon_clipping_code(input_crs, dataset, coordinates):
+    input_crs = input_crs or 'EPSG:4326'
+    code = ""
+    code += "Polygon([[17.85,56.8],[18.0,57.9],[18.5,57]])\n"
+    code += "\n"
+    code += f"poly_coords = {coordinates}\n \n"
+    code += "polygons = [ Polygon(coords) for coords in poly_coords]\n"
+    code += f"in_crs = pyproj.CRS('{input_crs}')\n"
+    code += f"out_crs = pyproj.CRS({dataset}.crs)\n"
+    code += "re_project = pyproj.Transformer.from_crs(in_crs, out_crs, always_xy=True).transform\n"
+    code += "polygons = [transform(re_project, polygon) for polygon in polygons]\n"
+    code += f"{dataset} = {dataset}.rio.clip(polygons, drop=True, invert=False)\n"
+     
+    return code
+
+# ----------------------------------------------------------------------------------
+#                               map_load_collection
+# ----------------------------------------------------------------------------------
 def map_load_collection(id, process):
     """ Map to load_collection process for ODC datacubes.
 
@@ -35,47 +144,27 @@ def map_load_collection(id, process):
         'product': process['arguments']['id'],
         'dask_chunks': {'y': DASK_CHUNK_SIZE_Y,'x':DASK_CHUNK_SIZE_X, 'time':'auto'},
         }
-    if 'spatial_extent' in process['arguments']:
-        if process['arguments']['spatial_extent'] is not None:
-            if 'south' in process['arguments']['spatial_extent'] and \
-               'north' in process['arguments']['spatial_extent'] and \
-               'east'  in process['arguments']['spatial_extent'] and \
-               'west'  in process['arguments']['spatial_extent']:
-                params['x'] = (process['arguments']['spatial_extent']['west'],process['arguments']['spatial_extent']['east'])
-                params['y'] = (process['arguments']['spatial_extent']['south'],process['arguments']['spatial_extent']['north'])
-            elif 'coordinates' in process['arguments']['spatial_extent']:
-                # Pass coordinates to odc and process them there
-                # TODO: data has to be masked after loading with a polygon
-                polygon = process['arguments']['spatial_extent']['coordinates']
-                if polygon is not None:
-                    lowLat      = np.min([[el[1] for el in polygon[0]]])
-                    highLat     = np.max([[el[1] for el in polygon[0]]])
-                    lowLon      = np.min([[el[0] for el in polygon[0]]])
-                    highLon     = np.max([[el[0] for el in polygon[0]]])
-                    params['x'] = (lowLon,highLon)
-                    params['y'] = (lowLat,highLat)
-    params['time'] = []
-    if 'temporal_extent' in process['arguments']:
-        def exclusive_date(date):
-            return np.datetime_as_string(np.datetime64(date) - np.timedelta64(1, 's'), timezone='UTC') # Achieves, "up to but not including"
-        if process['arguments']['temporal_extent'] is not None and len(process['arguments']['temporal_extent'])>0:
-            timeStart = '1970-01-01'
-            timeEnd   = str(datetime.now()).split(' ')[0] # Today is the default date for timeEnd, to include all the dates if not specified
-            if process['arguments']['temporal_extent'][0] is not None:
-                timeStart = process['arguments']['temporal_extent'][0]
-            if process['arguments']['temporal_extent'][1] is not None:
-                timeEnd = process['arguments']['temporal_extent'][1]
-            params['time'] = [timeStart,exclusive_date(timeEnd)] 
-    if 'crs' in process['arguments']['spatial_extent']:
-        params['crs'] = process['arguments']['spatial_extent']['crs']
-    params['measurements'] = []
-    if 'bands' in process['arguments'] and process['arguments']['bands'] is not None and len(process['arguments']['bands'])>0:
-        params['measurements'] = process['arguments']['bands']
+    # Assume that if parameters are given, they should be correct or an exception is thrown 
+    polygon_coordinates =  add_optional_spatial_extent_to_params(params, process)
+ 
+    add_optional_time_arg_to_params(params, process)
 
-    return f"""
-{'_'+id} = oeop.load_collection(odc_cube=cube, **{params})
-"""
+    add_optional_arg_to_params(params, process['arguments']['spatial_extent'],'crs')
+     
+    params['measurements'] =  process['arguments'].get('bands',[])
+   
+    dataset =f"{'_'+id}" 
+    code =  f"{dataset} = oeop.load_collection(odc_cube=cube, **{params})\n"
 
+    if polygon_coordinates:
+      code += generate_polygon_clipping_code(input_crs = params.get('crs',None), 
+                                             dataset=dataset, coordinates=polygon_coordinates)
+    
+    return code
+
+# ----------------------------------------------------------------------------------
+#                               map_load_result
+# ----------------------------------------------------------------------------------
 def map_load_result(id, process) -> str:
     """Map load_result process.
 
@@ -87,51 +176,24 @@ def map_load_result(id, process) -> str:
         'product': product_name,
         'dask_chunks': {'y': DASK_CHUNK_SIZE_Y,'x':DASK_CHUNK_SIZE_X, 'time':'auto'},
         }
-    if 'spatial_extent' in process['arguments']:
-        if process['arguments']['spatial_extent'] is not None:
-            if 'south' in process['arguments']['spatial_extent'] and \
-               'north' in process['arguments']['spatial_extent'] and \
-               'east'  in process['arguments']['spatial_extent'] and \
-               'west'  in process['arguments']['spatial_extent']:
-                params['x'] = (process['arguments']['spatial_extent']['west'],process['arguments']['spatial_extent']['east'])
-                params['y'] = (process['arguments']['spatial_extent']['south'],process['arguments']['spatial_extent']['north'])
-            elif 'coordinates' in process['arguments']['spatial_extent']:
-                # Pass coordinates to odc and process them there
-                # TODO: data has to be masked after loading with a polygon
-                polygon = process['arguments']['spatial_extent']['coordinates']
-                if polygon is not None:
-                    lowLat      = np.min([[el[1] for el in polygon[0]]])
-                    highLat     = np.max([[el[1] for el in polygon[0]]])
-                    lowLon      = np.min([[el[0] for el in polygon[0]]])
-                    highLon     = np.max([[el[0] for el in polygon[0]]])
-                    params['x'] = (lowLon,highLon)
-                    params['y'] = (lowLat,highLat)
-            if 'crs' in process['arguments']['spatial_extent']:
-                params['crs'] = process['arguments']['spatial_extent']['crs']
+    # Assume that if parameters are given, they should be correct or an exception is thrown 
+   
+    polygon =  add_optional_spatial_extent_to_params(params, process)
+    add_optional_time_arg_to_params(params, process)
 
-    if 'temporal_extent' in process['arguments']:
-        params['time'] = []
-        def exclusive_date(date):
-            return np.datetime_as_string(np.datetime64(date) - np.timedelta64(1, 's'), timezone='UTC') # Achieves, "up to but not including"
-        if process['arguments']['temporal_extent'] is not None and len(process['arguments']['temporal_extent'])>0:
-            timeStart = '1970-01-01'
-            timeEnd   = str(datetime.now()).split(' ')[0] # Today is the default date for timeEnd, to include all the dates if not specified
-            if process['arguments']['temporal_extent'][0] is not None:
-                timeStart = process['arguments']['temporal_extent'][0]
-            if process['arguments']['temporal_extent'][1] is not None:
-                timeEnd = process['arguments']['temporal_extent'][1]
-            params['time'] = [timeStart,exclusive_date(timeEnd)]
+    params['measurements'] =  process['arguments'].get('bands',[])
 
-    if 'bands' in process['arguments'] and process['arguments']['bands'] is not None and len(process['arguments']['bands'])>0:
-        params['measurements'] = []
-        params['measurements'] = process['arguments']['bands']
+    code = f"_{id} = oeop.load_result(odc_cube=cube_user_gen, **{params})\n"
 
-    return f"""
-_{id} = oeop.load_result(odc_cube=cube_user_gen, **{params})
-"""
+    if polygon:
+        code += generate_polygon_clipping_code(input_crs = params.get('crs',None), dataset=dataset, polygon=polygon)
+    
+    return code
 
-
-def map_general(id, process, kwargs=None, donot_map_params: List[str] = None) -> str:
+# ----------------------------------------------------------------------------------
+#                                map_general
+# ----------------------------------------------------------------------------------
+def map_general(id, process, kwargs=None, donot_map_params: List[str] = None, job_id:str ="") -> str:
     """Map processes with required arguments only.
 
     Currently processes with params ('x', 'y'), ('data', 'value'), ('base', 'p'), and ('x') are supported.
@@ -163,11 +225,14 @@ def map_general(id, process, kwargs=None, donot_map_params: List[str] = None) ->
             _ = kwargs.pop('dimension', None)
         _ = kwargs.pop('from_parameter', None)
         params = {**params, **kwargs}
-
+    if 'save_result' in process_name:
+            params['output_filepath'] = f"{job_id}_"
     params_str = create_param_string(params, process_name)
     return get_oeop_str(id, process_name, params_str)
 
-
+# ----------------------------------------------------------------------------------
+#                          convert_from_node_parameter
+# ----------------------------------------------------------------------------------
 def convert_from_node_parameter(args_in, from_par=None, donot_map_params: List[str] = None):
     """ Convert from_node and resolve from_parameter dependencies."""
 
@@ -197,7 +262,9 @@ def convert_from_node_parameter(args_in, from_par=None, donot_map_params: List[s
 
     return args_in
 
-
+# ----------------------------------------------------------------------------------
+#                                check_dimension
+# ----------------------------------------------------------------------------------
 def check_dimension(in_value):
     """ Convert common dimension names to a preset value."""
 
