@@ -183,7 +183,8 @@ def map_load_result(id, process) -> str:
 
     params['measurements'] =  process['arguments'].get('bands',[])
 
-    code = f"_{id} = oeop.load_result(odc_cube=cube_user_gen, **{params})\n"
+    dataset =f"{'_'+id}" 
+    code = f"{dataset}} = oeop.load_result(odc_cube=cube_user_gen, **{params})\n"
 
     if polygon:
         code += generate_polygon_clipping_code(input_crs = params.get('crs',None), dataset=dataset, polygon=polygon)
