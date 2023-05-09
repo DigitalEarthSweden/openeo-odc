@@ -160,6 +160,8 @@ def create_job_header(dask_url: str, job_id: str, user_id: str, odc_env_collecti
  
     return code 
 
+def indent(indent, line):
+    return " " * indent + line
 
 def create_job_tail(graph_will_return_json_stuff,last_node_name, job_id, dask_url):
     res = ""
@@ -169,9 +171,9 @@ def create_job_tail(graph_will_return_json_stuff,last_node_name, job_id, dask_ur
     if graph_will_return_json_stuff:
         # Allow other results thatn tif/nc files to be returned
         save_cmd = f"with open('{job_id}.json', 'w') as f:\n"
-        save_cmd += "    res = {}\n"
-        save_cmd += f"    res['result']=_{last_node_name}\n"
-        save_cmd += "    res = json.dumps(res)\n"
-        save_cmd += "    f.write(res)\n"
+        save_cmd += indent(4, f"df = _{last_node_name}.compute()\n")
+        save_cmd += indent(4, "date_columns = df.select_dtypes(include=['datetime64']).columns.tolist()\n")
+        save_cmd += indent(4, "df[date_columns] = df[date_columns].astype(str)\n")
+        save_cmd += indent(4, "f.write(df.to_json())\n")
         res += save_cmd
     return res
