@@ -2,8 +2,9 @@
 
 """
 
-from openeo_odc.map_processes_odc import map_general, map_load_collection, map_load_result
-from openeo_odc.utils import ExtraFuncUtils, PROCS_WITH_VARS
+from openeo_odc.map_processes_odc import (map_general, map_load_collection,
+                                          map_load_result)
+from openeo_odc.utils import PROCS_WITH_VARS, ExtraFuncUtils
 
 
 def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None):
@@ -71,6 +72,27 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
             extra_func[fc_name][cur_node.id] = f"    {cur_node_content}"  # add indentation
         else:
             nodes[cur_node.id] = cur_node_content
+
+    # Add optional cloud coverage predicate to load_collection 
+    for ix in range(1,10): # Can it be more than 10 load collection ? 
+        load_collection_node = graph.get_node_by_name(f'loadcollection{ix}')
+        if load_collection_node is None:
+            break
+        if 'eo:cloud_cover' in str(load_collection_node):
+            # We need to add the predicate to the loadcollection node and also modify
+            # the produced code for the actual predicate. 
+            predicate_node = load_collection_node.arguments['properties']['eo:cloud_cover']['from_node']
+            # Add the predicate to load_collection
+            nodes[load_collection_node.id] = nodes[load_collection_node.id].replace("**{",
+                                            "**{'dataset_predicate':_"+ predicate_node + ",")
+            # Modify the generated predicate so it becomes a lambda function
+            prop_filter = nodes[predicate_node]
+            # The prop_filter node looks like this: _lte1_1 = oeop.lte(**{"x": value, "y": 95}) but is really
+            # should be '_lte1_1 =  lambda dataset: oeop.lte(**{"x": dataset.metadata.cloud_cover, "y": 95})'
+            prop_filter = prop_filter.replace('value', 'dataset.metadata.cloud_cover')
+            prop_filter = prop_filter.replace(" = ", f" = lambda dataset: ") 
+            nodes[predicate_node] = prop_filter
+    # End optional cloud cover filter
 
     final_fc = {}
     for fc_proc in extra_func.values():
