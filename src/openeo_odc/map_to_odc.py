@@ -75,7 +75,8 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
 
     # Add optional cloud coverage predicate to load_collection 
     for ix in range(1,10): # Can it be more than 10 load collection ? 
-        load_collection_node = graph.get_node_by_name(f'loadcollection{ix}')
+        # python client and the web client omits different names for the load collection node  
+        load_collection_node = graph.get_node_by_name(f'loadcollection{ix}') or  graph.get_node_by_name(f'load{ix}')
         if load_collection_node is None:
             break
         if 'eo:cloud_cover' in str(load_collection_node):
