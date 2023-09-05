@@ -73,27 +73,56 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
         else:
             nodes[cur_node.id] = cur_node_content
 
-    # Add optional cloud coverage predicate to load_collection 
+    # Add optional property predicate(s) to all load_collection nodes 
     for ix in range(1,10): # Can it be more than 10 load collection ? 
         # python client and the web client omits different names for the load collection node  
         load_collection_node = graph.get_node_by_name(f'loadcollection{ix}') or  graph.get_node_by_name(f'load{ix}')
         if load_collection_node is None:
             break
-        if 'eo:cloud_cover' in str(load_collection_node):
-            # We need to add the predicate to the loadcollection node and also modify
-            # the produced code for the actual predicate. 
-            predicate_node = load_collection_node.arguments['properties']['eo:cloud_cover']['from_node']
-            # Add the predicate to load_collection
+        if 'properties' in str(load_collection_node):
+            # We need to 1) Collect all used properties and their code nodes
+            #            2) correct code nodes to be lambda expressions.
+            #            2  create and add predicate(s) to the loadcollection node
+            
+            # 1) Collect all used properties and the produced code nodes
+            properties_keys = load_collection_node.arguments['properties'].keys() #['eo:cloud_cover','title','etc] 
+            predicate_code_node_2_property = {}
+            predicate_code_nodes = []  
+            for p in properties_keys:
+                predicate_code_node = load_collection_node.arguments['properties'][p]['from_node']
+                predicate_code_node_2_property[predicate_code_node] = p 
+                predicate_code_nodes.append(predicate_code_node)
+
+            # 2) Modify the generated predicate so it becomes lambda functions with failsafe property access
+            for predicate_code_node in predicate_code_nodes:
+                prop_filter_code = nodes[predicate_code_node]
+                # The prop_filter code node looks like this: _lte1_1 = oeop.lte(**{"x": value, "y": 95}) we transform to
+                # '_lte1_1 =  lambda dataset: oeop.lte(**{"x": dataset.metadata['properties'].get('eo:cloudcover'), "y": 95})'
+                # def _lte1_1(dataset): return oeop.lte(**{"x": dataset.metadata['properties'].get('eo:cloudcover'), "y": 95})'
+                old_code_for_x_value = load_collection_node.child_processes._nodes[predicate_code_node].arguments['x']['from_parameter']
+                property_name = predicate_code_node_2_property[predicate_code_node]
+                new_code_for_x_value =  f"dataset.metadata_doc['properties'].get('{property_name}')"
+                prop_filter_code = prop_filter_code.replace(old_code_for_x_value, new_code_for_x_value)
+                # 
+                prop_filter_code = prop_filter_code.replace(f"_{predicate_code_node} = ", f"def _{predicate_code_node}(dataset) : return ") 
+                # There is also a potential problem if the y value is a string, then we need to add ' around it
+                y_value = load_collection_node.child_processes._nodes[predicate_code_node].arguments['y']
+                if isinstance(y_value, str):
+                    # we need to quote the y argument in the code node because openeo forgot
+                    prop_filter_code = prop_filter_code.replace(y_value,f"'{y_value}'")   
+                # update the node list with the new prop filter code
+                nodes[predicate_code_node] = prop_filter_code 
+
+            # 3) Add the predicate(s) to load_collection  
+            if len(predicate_code_nodes) == 1:
+                predicate = f'_{predicate_code_nodes[0]}' # e.g. _lte1_1
+            else:
+                #e.g. lambda dataset: _lte1_1(dataset) and _gte1_1(dataset)
+                predicates =  "and ".join([f' _{p}(dataset) ' for p in predicate_code_nodes])
+                predicate = f'lambda dataset : {predicates}'        
             nodes[load_collection_node.id] = nodes[load_collection_node.id].replace("**{",
-                                            "**{'dataset_predicate':_"+ predicate_node + ",")
-            # Modify the generated predicate so it becomes a lambda function
-            prop_filter = nodes[predicate_node]
-            # The prop_filter node looks like this: _lte1_1 = oeop.lte(**{"x": value, "y": 95}) but is really
-            # should be '_lte1_1 =  lambda dataset: oeop.lte(**{"x": dataset.metadata.cloud_cover, "y": 95})'
-            prop_filter = prop_filter.replace('value', 'dataset.metadata.cloud_cover')
-            prop_filter = prop_filter.replace(" = ", f" = lambda dataset: ") 
-            nodes[predicate_node] = prop_filter
-    # End optional cloud cover filter
+                                        "**{'dataset_predicate': "+ predicate + ", ")
+    # End optional properties predicate(s)
 
     final_fc = {}
     for fc_proc in extra_func.values():
