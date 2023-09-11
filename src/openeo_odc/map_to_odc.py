@@ -131,7 +131,7 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
         current_load_collection_node = graph.get_node_by_name(f'loadcollection{ix}') or graph.get_node_by_name(f'load{ix}')
         if current_load_collection_node is None:
             break
-        if 'properties' in str(current_load_collection_node):
+        if 'properties' in str(current_load_collection_node) and current_load_collection_node.arguments['properties'] is not None :
             # 1) Collect all used properties and the produced code nodes
             stac_property_names = current_load_collection_node.arguments['properties'].keys() #['eo:cloud_cover','title','etc]
             predicate_root_nodes = []  # These goes into the final predicate
