@@ -333,11 +333,11 @@ def create_job_header(
     code += "from shapely.ops import transform\n"
     code += "from shapely.geometry import Polygon\n"
     code += "\n"
-
-    code += "# from dask_gateway import Gateway\n"
     code += "import datacube\n"
     code += "import openeo_processes as oeop\n"
     code += "import time\n"
+    code += "from dask.distributed import Client\n"
+    code += "import os\n"
     code += "\n"
 
     code += "import json\n"
@@ -346,17 +346,9 @@ def create_job_header(
     code += "# Initialize ODC instance\n"
     code += "cube = datacube.Datacube()\n"
 
-    if dask_url:
-        code += "# Connect to the gateway\n"
-        code += "#gateway = Gateway('{dask_url}')\n"
-        code += "#options = gateway.cluster_options()\n"
-        code += "#options.user_id = '{user_id}'\n"
-        code += "#options.job_id = '{job_id}'\n"
-        code += "#cluster = gateway.new_cluster(options)\n"
-        code += "#cluster.adapt(minimum=1, maximum=3)\n"
-        code += "#time.sleep(60)\n"
-        code += "#client = cluster.get_client()\n"
-        code += "# Note that we shold encapsulate the progran in try-except-finally\n"
+    code += "dask_url = os.environ.get('DASK_URL', None)\n"
+    code += "if dask_url is not None:\n"
+    code += "   client = Client(dask_url)\n"
 
     return code
 
@@ -367,9 +359,9 @@ def indent(indent, line):
 
 def create_job_tail(graph_will_return_json_stuff, last_node_name, job_id, dask_url):
     res = ""
-    if dask_url:
-        # Ensure shutdown of cluster""" # This should be done in a finally clause
-        res += "cluster.shutdown()\ngateway.close()"
+    # Ensure shutdown of cluster""" # TODO This should be done in a finally clause
+    res += "if dask_url is not None:\n"
+    res += "   client.close()\n"
     if graph_will_return_json_stuff:
         # Allow other results thatn tif/nc files to be returned
         save_cmd = f"with open('{job_id}.json', 'w') as f:\n"
