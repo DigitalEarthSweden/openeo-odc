@@ -269,9 +269,7 @@ def map_to_odc(graph, odc_env, odc_url, job_id: str = None, user_id: str = None)
         ),
         **final_fc,
         **nodes,
-        "tail": create_job_tail(
-            graph_will_return_json_stuff, last_node_name, job_id, odc_url
-        ),
+        "tail": create_job_tail(graph_will_return_json_stuff, last_node_name, job_id),
     }
     return res_nodes
 
@@ -319,6 +317,10 @@ def resolve_from_parameter(node):
     return in_nodes
 
 
+def indent(indent, line):
+    return " " * indent + line
+
+
 def create_job_header(
     dask_url: str,
     job_id: str,
@@ -327,47 +329,54 @@ def create_job_header(
     odc_env_user_gen: str = "user_generated",
 ):
     """Create job imports."""
-    code = "import rioxarray\n"
-    code += "from shapely import ops\n"
-    code += "import pyproj\n"
-    code += "from shapely.ops import transform\n"
-    code += "from shapely.geometry import Polygon\n"
-    code += "\n"
-    code += "import datacube\n"
-    code += "import openeo_processes as oeop\n"
-    code += "import time\n"
-    code += "from dask.distributed import Client\n"
-    code += "import os\n"
-    code += "\n"
+    code = ""
+    code += indent(0, "import rioxarray # noqa \n")
+    code += indent(0, "from shapely import ops # noqa \n")
+    code += indent(0, "import pyproj # noqa \n")
+    code += indent(0, "from shapely.ops import transform # noqa \n")
+    code += indent(0, "from shapely.geometry import Polygon # noqa\n")
+    code += indent(0, "\n")
+    code += indent(0, "import datacube\n")
+    code += indent(0, "import openeo_processes as oeop\n")
+    code += indent(0, "import time\n")
+    code += indent(0, "import os\n")
+    code += indent(0, "\n")
+    code += indent(0, "import json # noqa \n")
+    code += indent(0, "\n")
 
-    code += "import json\n"
-    code += "\n"
+    code += indent(0, "cube = datacube.Datacube()\n")
+    code += indent(0, "\n")
+    code += indent(0, "dask_url = os.environ.get('DASK_URL', None)\n")
+    code += indent(0, "if dask_url is not None:\n")
+    code += indent(4, "from dask.distributed import Client # noqa \n")
+    code += indent(4, "client = Client(dask_url)\n\n")
 
-    code += "# Initialize ODC instance\n"
-    code += "cube = datacube.Datacube()\n"
-
-    code += "dask_url = os.environ.get('DASK_URL', None)\n"
-    code += "if dask_url is not None:\n"
-    code += "   client = Client(dask_url)\n"
-
+    code += indent(0, "dask_gateway_url = os.environ.get('DASK__GATEWAY_URL', None)\n")
+    code += indent(0, "if dask_gateway_url:\n")
+    code += indent(4, "from dask_gateway import Gateway\n")
+    code += indent(4, "gateway = Gateway(dask_gateway_url)\n")
+    code += indent(4, "options = gateway.cluster_options()\n")
+    code += indent(4, "options.user_id = '{user_id}'\n")
+    code += indent(4, "options.job_id = '{job_id}'\n")
+    code += indent(4, "cluster = gateway.new_cluster(options)\n")
+    code += indent(4, "dask_min_workers = os.environ.get('DASK__MIN_WORKERS', 1)\n")
+    code += indent(4, "dask_max_workers = os.environ.get('DASK__MAX_WORKERS', 3)\n")
+    code += indent(4, "cluster.adapt(minimum=dask_min_workers, maximum=dask_max_workers)\n")
+    code += indent(4, "time.sleep(60)\n")
+    code += indent(4, "client = cluster.get_client()\n\n")
     return code
 
 
-def indent(indent, line):
-    return " " * indent + line
-
-
-def create_job_tail(graph_will_return_json_stuff, last_node_name, job_id, dask_url):
+def create_job_tail(graph_will_return_json_stuff, last_node_name, job_id):
     res = ""
-    # Ensure shutdown of cluster""" # TODO This should be done in a finally clause
     res += "if dask_url is not None:\n"
-    res += "   client.close()\n"
+    res += indent(4, "client.close()\n")
     if graph_will_return_json_stuff:
         # Allow other results thatn tif/nc files to be returned
         save_cmd = f"with open('{job_id}.json', 'w') as f:\n"
         save_cmd += indent(4, f"df = _{last_node_name}\n")
         save_cmd += indent(4, "if 'compute' in dir(df):\n")
-        save_cmd += indent(8, f"df = df.compute()\n")
+        save_cmd += indent(8, "df = df.compute()\n")
         save_cmd += indent(
             8,
             "date_columns = df.select_dtypes(include=['datetime64']).columns.tolist()\n",
